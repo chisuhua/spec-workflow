@@ -102,7 +102,25 @@ invoke_arch_stage() {
         python3 "$(dirname "${BASH_SOURCE[0]}")/e2e_stage_runner.py"
 }
 
-invoke_planner_stage() { :; }
-invoke_builder_phases() { :; }
+invoke_planner_stage() {
+    local root="$1"
+    cd "$root" || return 1
+    E2E_STAGE=planner \
+    E2E_PROJECT_ROOT="$root" \
+        python3 "$(dirname "${BASH_SOURCE[0]}")/e2e_stage_runner.py"
+}
+
+invoke_builder_phases() {
+    local root="$1" name="$2"
+    cd "$root" || return 1
+    E2E_STAGE=builder \
+    E2E_PROJECT_ROOT="$root" \
+    E2E_CHANGE_NAME="$name" \
+        python3 "$(dirname "${BASH_SOURCE[0]}")/e2e_stage_runner.py"
+    echo "# E2E touch" >> "$root/openspec/changes/$name/touch.log"
+    git -C "$root" add "openspec/changes/$name/touch.log"
+    git -C "$root" commit -q -m "e2e: touch commit for lightweight mode"
+}
+
 invoke_archive() { :; }
 assert_state() { :; }
