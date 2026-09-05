@@ -52,3 +52,26 @@ teardown() {
     [ -f "$FAKE_ROOT/openspec/changes/archive/e2e-fixture/proposal.md" ]
     [ ! -d "$FAKE_ROOT/openspec/changes/e2e-fixture" ]
 }
+
+@test "full-workflow 4/7: lifecycle ends with iteration.json status=archived, zero active changes" {
+    write_arch_fixture "$FAKE_ROOT"
+    write_proposal_fixture "$FAKE_ROOT" "e2e-fixture"
+    invoke_arch_stage "$FAKE_ROOT"
+    invoke_planner_stage "$FAKE_ROOT"
+    invoke_builder_phases "$FAKE_ROOT" "e2e-fixture"
+    sed -i 's/^- \[ \]/- [x]/g' "$FAKE_ROOT/openspec/changes/e2e-fixture/tasks.md"
+    invoke_archive "$FAKE_ROOT" "e2e-fixture"
+
+    run jq -r '.sprints[-1].status' "$FAKE_ROOT/.rddf/state/iteration.json"
+    [ "$output" = "archived" ]
+
+    local active_count
+    active_count=$(find "$FAKE_ROOT/openspec/changes" -maxdepth 2 -name proposal.md -not -path "*/archive/*" | wc -l)
+    [ "$active_count" -eq 0 ]
+}
+
+@test "full-workflow 5/7: arch gate fails on missing ADR-*.md" {
+    run invoke_arch_stage "$FAKE_ROOT"
+    [ "$status" -ne 0 ]
+    [ ! -f "$FAKE_ROOT/.rddf/state/.arch-handoff.json" ]
+}
