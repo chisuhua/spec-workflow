@@ -122,5 +122,70 @@ invoke_builder_phases() {
     git -C "$root" commit -q -m "e2e: touch commit for lightweight mode"
 }
 
-invoke_archive() { :; }
-assert_state() { :; }
+invoke_archive() {
+    local root="$1" name="$2"
+    [ -d "$root" ] || { echo "❌ invoke_archive: root not found: $root" >&2; return 4; }
+    [ -n "$name" ] || { echo "❌ invoke_archive: change name required" >&2; return 4; }
+
+    local default_branch
+    default_branch=$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null || echo "master")
+    local change_commits
+    change_commits=$(git -C "$root" log --oneline -- "openspec/changes/$name/" 2>/dev/null | wc -l | tr -d ' ')
+
+    if [ "${change_commits:-0}" -lt 2 ]; then
+        echo "❌ archive gate: lightweight mode requires ≥2 commits touching openspec/changes/$name/ (got ${change_commits:-0})" >&2
+        return 1
+    fi
+
+    local tasks_file="$root/openspec/changes/$name/tasks.md"
+    local unchecked
+    unchecked=$(grep -cE "^- \[ \]" "$tasks_file" 2>/dev/null || echo 0)
+    if [ "$unchecked" -gt 0 ]; then
+        echo "❌ archive gate: tasks.md has $unchecked unchecked items" >&2
+        return 2
+    fi
+
+    if [ ! -f "$root/.rddf/state/builder/$name.json" ]; then
+        echo "❌ archive gate: missing .rddf/state/builder/$name.json" >&2
+        return 3
+    fi
+
+    mkdir -p "$root/openspec/changes/archive"
+    mv "$root/openspec/changes/$name" "$root/openspec/changes/archive/$name"
+    git -C "$root" add "openspec/changes/" 2>/dev/null || true
+    git -C "$root" commit -q -m "archive($name): archive completed" 2>/dev/null || true
+
+    mkdir -p "$root/.rddf/state"
+    if [ ! -f "$root/.rddf/state/iteration.json" ]; then
+        cat > "$root/.rddf/state/iteration.json" <<EOF
+{
+  "sprints": [
+    {"change": "$name", "status": "archived", "archived_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+  ]
+}
+EOF
+    else
+        jq --arg name "$name" \
+            '.sprints |= map(if .change == $name then .status = "archived" else . end)' \
+            "$root/.rddf/state/iteration.json" > "$root/.rddf/state/iteration.json.tmp" \
+            && mv "$root/.rddf/state/iteration.json.tmp" "$root/.rddf/state/iteration.json"
+    fi
+}
+
+assert_state() {
+    local root="$1" file="$2" fields="$3"
+    local state_file="$root/.rddf/state/$file"
+    [ -f "$state_file" ] || { echo "❌ assert_state: file missing: $state_file" >&2; return 1; }
+
+    local IFS='|'
+    local pair key expected actual
+    for pair in $fields; do
+        key="${pair%%:*}"
+        expected="${pair#*:}"
+        actual=$(jq -r --arg k "$key" '.[$k] // empty' "$state_file" 2>/dev/null)
+        if [ "$actual" != "$expected" ]; then
+            echo "❌ assert_state: $key expected '$expected' got '$actual'" >&2
+            return 1
+        fi
+    done
+}
