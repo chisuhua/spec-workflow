@@ -22,9 +22,50 @@
 # For test-only helpers, we use the simpler `E2E_*` env-var pattern
 # documented in the helper wrappers below.
 
-# Stub functions (populated in subsequent tasks T2-T5)
-setup_fake_project() { :; }
-write_arch_fixture() { :; }
+# Setup: create fake project under $BATS_TEST_TMPDIR (or /tmp fallback)
+# Returns: absolute path to fake project root via stdout
+setup_fake_project() {
+    local root
+    root="${BATS_TEST_TMPDIR:-/tmp}/fake-project-$$-${RANDOM}"
+    mkdir -p "$root"
+    cd "$root" || return 1
+    git init -q
+    git config user.email "e2e@test.local"
+    git config user.name "E2E Test"
+    echo "fake project" > README.md
+    echo '{"name":"fake-project","version":"0.0.1"}' > package.json
+    git add README.md package.json
+    git commit -q -m "init fake project"
+    echo "$root"
+}
+
+# Write arch-stage fixture: 1 ADR + minimal roadmap
+# Args: $1 = fake project root
+write_arch_fixture() {
+    local root="$1"
+    mkdir -p "$root/docs/adr"
+    cat > "$root/docs/adr/ADR-0001-test-arch.md" <<'EOF'
+# ADR-0001: Test Architecture
+
+**Status**: 已采纳 (2026-01-01)
+
+## Context
+E2E fixture for full-workflow E2E test.
+EOF
+    cat > "$root/roadmap.md" <<'EOF'
+# Roadmap
+
+**当前阶段**: phase-1
+
+## Phase Skeleton
+| Phase | Theme | Status |
+|-------|-------|--------|
+| phase-1 | e2e-fixture | active |
+EOF
+    git -C "$root" add docs/adr/ADR-0001-test-arch.md roadmap.md
+    git -C "$root" commit -q -m "add arch fixture"
+}
+
 write_proposal_fixture() { :; }
 invoke_arch_stage() { :; }
 invoke_planner_stage() { :; }
