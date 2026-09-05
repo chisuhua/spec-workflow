@@ -75,3 +75,37 @@ teardown() {
     [ "$status" -ne 0 ]
     [ ! -f "$FAKE_ROOT/.rddf/state/.arch-handoff.json" ]
 }
+
+@test "full-workflow 6/7: archive gate fails on lightweight mode 0 commits" {
+    write_arch_fixture "$FAKE_ROOT"
+    write_proposal_fixture "$FAKE_ROOT" "e2e-fixture"
+    invoke_arch_stage "$FAKE_ROOT"
+    invoke_planner_stage "$FAKE_ROOT"
+
+    run invoke_archive "$FAKE_ROOT" "e2e-fixture"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"commit"* ]] || [[ "$stderr" == *"commit"* ]]
+    [ -d "$FAKE_ROOT/openspec/changes/e2e-fixture" ]
+    [ ! -d "$FAKE_ROOT/openspec/changes/archive/e2e-fixture" ]
+}
+
+@test "full-workflow 7/7: archive gate fails on incomplete tasks.md" {
+    write_arch_fixture "$FAKE_ROOT"
+    write_proposal_fixture "$FAKE_ROOT" "e2e-fixture"
+    invoke_arch_stage "$FAKE_ROOT"
+    invoke_planner_stage "$FAKE_ROOT"
+    invoke_builder_phases "$FAKE_ROOT" "e2e-fixture"
+
+    cat > "$FAKE_ROOT/openspec/changes/e2e-fixture/tasks.md" <<'EOF'
+# e2e-fixture Tasks
+
+- [x] 1. Implement fixture
+- [ ] 2. Run E2E test
+EOF
+
+    run invoke_archive "$FAKE_ROOT" "e2e-fixture"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unchecked"* ]] || [[ "$stderr" == *"unchecked"* ]]
+    [ -d "$FAKE_ROOT/openspec/changes/e2e-fixture" ]
+    [ ! -d "$FAKE_ROOT/openspec/changes/archive/e2e-fixture" ]
+}
