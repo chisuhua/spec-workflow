@@ -66,8 +66,42 @@ EOF
     git -C "$root" commit -q -m "add arch fixture"
 }
 
-write_proposal_fixture() { :; }
-invoke_arch_stage() { :; }
+write_proposal_fixture() {
+    local root="$1" name="$2"
+    mkdir -p "$root/openspec/changes/$name"
+    cat > "$root/openspec/changes/$name/proposal.md" <<EOF
+# $name Proposal
+
+## Why
+E2E fixture proposal.
+EOF
+    cat > "$root/openspec/changes/$name/tasks.md" <<EOF
+# $name Tasks
+
+- [ ] 1. Implement fixture
+- [ ] 2. Run E2E test
+EOF
+    cat > "$root/openspec/changes/$name/design.md" <<EOF
+# $name Design
+
+## Approach
+Direct implementation.
+EOF
+    git -C "$root" add "openspec/changes/$name"
+    git -C "$root" commit -q -m "add $name change fixture"
+}
+
+invoke_arch_stage() {
+    local root="$1"
+    cd "$root" || return 1
+    E2E_STAGE=arch \
+    E2E_PROJECT_ROOT="$root" \
+    E2E_ADR_DIR=docs/adr \
+    E2E_ROADMAP_PATH=roadmap.md \
+    E2E_ADR_PATTERN='ADR-*.md' \
+        python3 "$(dirname "${BASH_SOURCE[0]}")/e2e_stage_runner.py"
+}
+
 invoke_planner_stage() { :; }
 invoke_builder_phases() { :; }
 invoke_archive() { :; }
