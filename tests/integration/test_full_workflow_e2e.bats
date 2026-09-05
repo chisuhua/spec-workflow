@@ -30,3 +30,25 @@ teardown() {
     assert_state "$FAKE_ROOT" ".arch-handoff.json" \
         "schema_version:3|adr_dir:docs/adr|current_phase:phase-1"
 }
+
+@test "full-workflow 2/7: planner stage writes .planner-handoff.json (v1 schema)" {
+    write_arch_fixture "$FAKE_ROOT"
+    invoke_arch_stage "$FAKE_ROOT"
+    invoke_planner_stage "$FAKE_ROOT"
+
+    assert_state "$FAKE_ROOT" ".planner-handoff.json" \
+        "schema_version:1|owner:rdd-planner"
+}
+
+@test "full-workflow 3/7: builder phases + archive moves change to openspec/changes/archive/" {
+    write_arch_fixture "$FAKE_ROOT"
+    write_proposal_fixture "$FAKE_ROOT" "e2e-fixture"
+    invoke_arch_stage "$FAKE_ROOT"
+    invoke_planner_stage "$FAKE_ROOT"
+    invoke_builder_phases "$FAKE_ROOT" "e2e-fixture"
+    sed -i 's/^- \[ \]/- [x]/g' "$FAKE_ROOT/openspec/changes/e2e-fixture/tasks.md"
+    invoke_archive "$FAKE_ROOT" "e2e-fixture"
+
+    [ -f "$FAKE_ROOT/openspec/changes/archive/e2e-fixture/proposal.md" ]
+    [ ! -d "$FAKE_ROOT/openspec/changes/e2e-fixture" ]
+}
