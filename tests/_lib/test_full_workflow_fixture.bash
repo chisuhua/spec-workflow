@@ -230,7 +230,7 @@ invoke_archive_happy() {
     git -C "$root" add "openspec/changes/" 2>/dev/null || true
     git -C "$root" commit -q -m "archive($name): archive completed" 2>/dev/null || true
 
-    # Real mark_iteration_archived via skills._lib.iteration.post_archive
+    # Real sync_iteration_after_archive via skills._lib.iteration
     # (Oracle C1 safe: env-var passing, inline heredoc has no bash $VAR inside)
     local archive_sha
     archive_sha=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)
@@ -238,22 +238,19 @@ invoke_archive_happy() {
     PROJECT_ROOT="$root" \
     CHANGE_NAME="$name" \
     ARCHIVE_COMMIT_SHA="$archive_sha" \
-    SKIP_VERIFIER_CONTRACT=yes \
-    SKIP_AC_VERIFICATION=yes \
-    FORCE_ARCHIVE_INCOMPLETE=no \
         python3 <<'PYEOF'
 import os, sys
 sys.path.insert(0, os.environ.get("REPO_ROOT", "."))
 try:
-    from skills._lib.iteration.post_archive import mark_iteration_archived
-    mark_iteration_archived(
+    from skills._lib.iteration.post_archive import sync_iteration_after_archive
+    sync_iteration_after_archive(
         project_root=os.environ["PROJECT_ROOT"],
         change_name=os.environ["CHANGE_NAME"],
-        archive_commit_sha=os.environ.get("ARCHIVE_COMMIT_SHA", ""),
+        archive_commit_sha=os.environ.get("ARCHIVE_COMMIT_SHA", "") or None,
     )
-    print("✅ mark_iteration_archived complete")
+    print("✅ sync_iteration_after_archive complete")
 except Exception as e:
-    print(f"❌ mark_iteration_archived failed: {e}", file=sys.stderr)
+    print(f"❌ sync_iteration_after_archive failed: {e}", file=sys.stderr)
     sys.exit(1)
 PYEOF
 }
