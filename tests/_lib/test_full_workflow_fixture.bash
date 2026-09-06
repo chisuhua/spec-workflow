@@ -4,23 +4,32 @@
 # Helper functions for test_full_workflow_e2e.bats.
 # Sourced via load_lib test_full_workflow_fixture.
 #
-# Exports 8 functions for fake-project lifecycle E2E testing:
-#   setup_fake_project           — mktemp -d + git init + minimal structure
-#   write_arch_fixture           — docs/adr/ + roadmap.md + arch docs
-#   write_proposal_fixture       — openspec/changes/<name>/{proposal,tasks,design}.md
-#   invoke_arch_stage            — call rdd-arch entry bash helpers
-#   invoke_planner_stage         — call rdd-planner stage entry/exit helpers
-#   invoke_builder_phases        — call rdd-builder phase 0-3 helpers
-#   invoke_archive               — call _lib/archive.sh::archive_change
-#   assert_state                 — verify .rddf/state/*.json exists + schema fields
+# v2 (real path): each invoke_* function calls REAL production code:
+#   invoke_arch_stage    → skills/rdd-arch/scripts/write_arch_handoff_env
+#                           (python3 -m, 12 DISCOVERED_* env vars, Oracle C1 safe)
+#   invoke_arch_gate     → skills/rdd-arch/scripts/arch_done_gate.sh::check_arch_done_gate
+#                           (real bash function, gates on ADR count + roadmap)
+#   invoke_planner_stage → python3 -m _lib.planner_handoff
+#                           (PROJECT_ROOT + PROPOSALS_* + FEATURES_ACTIVE + CURRENT_SPRINT)
+#   invoke_builder_phases→ test_full_workflow_e2e_runner.sh (env-py shim for
+#                           _lib.builder_handoff.write_builder_handoff)
+#   invoke_archive_gate  → _lib/archive.sh::archive_gate_check (real function)
+#                           gates on tasks.md ≥1 [x] (SKIP_VERIFIER_CONTRACT +
+#                           SKIP_AC_VERIFICATION bypass non-task sub-gates)
+#   invoke_archive_happy → openspec archive <name> --yes + mark_iteration_archived
+#                           (real CLI + real Python via skills._lib.iteration)
+#   assert_state         → jq field assertions on .rddf/state/*.json
+#   assert_schema        → jsonschema.validate against _lib/schemas/*.json
+#                           (defense-in-depth contract lock)
 #
-# State isolated via $BATS_TEST_TMPDIR (auto-cleaned) — never touches $REPO_ROOT/.rddf.
-#
-# Python invocation pattern: per AGENTS.md §20 Oracle C1, NEVER use
-# `python3 -c "...$VAR..."` string interpolation. Use env-var passing via
-# the standard 3-file pattern: {shim}.sh / {shim}.py / {shim}.env.py.
-# For test-only helpers, we use the simpler `E2E_*` env-var pattern
-# documented in the helper wrappers below.
+# Oracle C1 safety: all Python invocations use env-var passing; NEVER bash
+# string interpolation into `python3 -c "...$VAR..."`. Python source
+# uses only static content (heredocs) + env-var reading.
+
+# Resolve REPO_ROOT once (set by test_helper.bash via load_lib)
+: "${REPO_ROOT:?REPO_ROOT not set — load test_helper first}"
+
+# ─── Fake project setup ─────────────────────────────────────────────────
 
 # Setup: create fake project under $BATS_TEST_TMPDIR (or /tmp fallback)
 # Returns: absolute path to fake project root via stdout
@@ -66,6 +75,8 @@ EOF
     git -C "$root" commit -q -m "add arch fixture"
 }
 
+# Write proposal-stage fixture: skeleton proposal.md + tasks.md + design.md
+# Args: $1 = fake project root, $2 = change name
 write_proposal_fixture() {
     local root="$1" name="$2"
     mkdir -p "$root/openspec/changes/$name"
@@ -91,87 +102,167 @@ EOF
     git -C "$root" commit -q -m "add $name change fixture"
 }
 
+# ─── Real stage invocation ──────────────────────────────────────────────
+
+# Invoke rdd-arch stage: writes .arch-handoff.json via REAL write_arch_handoff
+# Calls: python3 -m skills.rdd_arch.scripts.write_arch_handoff_env
+# Args: $1 = fake project root
 invoke_arch_stage() {
     local root="$1"
     cd "$root" || return 1
-    E2E_STAGE=arch \
-    E2E_PROJECT_ROOT="$root" \
-    E2E_ADR_DIR=docs/adr \
-    E2E_ROADMAP_PATH=roadmap.md \
-    E2E_ADR_PATTERN='ADR-*.md' \
-        python3 "$(dirname "${BASH_SOURCE[0]}")/e2e_stage_runner.py"
+
+    # Real writer requires PROJECT_ROOT + DISCOVERED_* env vars (12 total)
+    # Side-effect env vars disable reflect + planner feedback hooks
+    PROJECT_ROOT="$root" \
+    SKIP_WORKFLOW_REFLECTION=1 \
+    SKIP_AUTO_PLANNER_FEEDBACK=1 \
+    DISCOVERED_ADR_DIR=docs/adr \
+    DISCOVERED_ADR_PATTERN='ADR-*.md' \
+    DISCOVERED_ADR_DIR_FOUND=true \
+    DISCOVERED_ROADMAP_FOUND=true \
+    DISCOVERED_ARCH_FOUND=false \
+    DISCOVERED_ADR_DIR_TRIED=3 \
+    DISCOVERED_ROADMAP_TRIED=2 \
+    DISCOVERED_ARCH_TRIED=3 \
+    DISCOVERED_ROADMAP_PATH=roadmap.md \
+    DISCOVERED_ARCHITECTURE_DIR=docs/architecture \
+    ROADMAP_EXISTS_BOOL=true \
+        python3 -m skills.rdd_arch.scripts.write_arch_handoff_env
 }
 
+# Invoke rdd-arch gate: real check_arch_done_gate (error path test)
+# Sources skills/rdd-arch/scripts/arch_done_gate.sh, calls check_arch_done_gate
+# Args: $1 = fake project root
+invoke_arch_gate() {
+    local root="$1"
+    cd "$root" || return 1
+
+    # Source the real arch gate function (Oracle C1 safe: pure bash, no Python)
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/skills/rdd-arch/scripts/arch_done_gate.sh"
+
+    # Real gate reads DISCOVERED_* env vars (set to point at fake project)
+    PROJECT_ROOT="$root" \
+    DISCOVERED_ADR_DIR=docs/adr \
+    DISCOVERED_ADR_PATTERN='ADR-*.md' \
+    DISCOVERED_ROADMAP_PATH=roadmap.md \
+    check_arch_done_gate
+}
+
+# Invoke rdd-planner stage: writes .planner-handoff.json via REAL python module
+# Calls: python3 -m _lib.planner_handoff
+# Args: $1 = fake project root
 invoke_planner_stage() {
     local root="$1"
     cd "$root" || return 1
-    E2E_STAGE=planner \
-    E2E_PROJECT_ROOT="$root" \
-        python3 "$(dirname "${BASH_SOURCE[0]}")/e2e_stage_runner.py"
+
+    # Real writer reads PROJECT_ROOT + 4 env vars (per _lib/planner_handoff.py:48-57)
+    PROJECT_ROOT="$root" \
+    PROPOSALS_AUTHORED="add-e2e-fixture" \
+    PROPOSALS_APPROVED_COUNT=1 \
+    FEATURES_ACTIVE="feat-e2e-fixture" \
+    CURRENT_SPRINT="sprint-2026-09" \
+        python3 -m _lib.planner_handoff
 }
 
+# Invoke rdd-builder handoff: writes .rddf/state/builder/<change>.json via env-py shim
+# Calls: test_full_workflow_e2e_runner.sh → .env.py → _lib.builder_handoff.write_builder_handoff
+# Args: $1 = fake project root, $2 = change name
 invoke_builder_phases() {
     local root="$1" name="$2"
     cd "$root" || return 1
-    E2E_STAGE=builder \
+
+    # Real writer via env-py shim (Oracle C1 safe)
+    PROJECT_ROOT="$REPO_ROOT" \
     E2E_PROJECT_ROOT="$root" \
     E2E_CHANGE_NAME="$name" \
-        python3 "$(dirname "${BASH_SOURCE[0]}")/e2e_stage_runner.py"
-    echo "# E2E touch" >> "$root/openspec/changes/$name/touch.log"
+    E2E_BUILDER_PHASE=phase-2 \
+    E2E_BUILDER_APPROVAL_STATUS=approved \
+    E2E_BUILDER_EXECUTION_MODE=lightweight \
+    E2E_BUILDER_EXECUTION_STATUS=completed \
+    E2E_BUILDER_REVIEW_STATUS=merge \
+    E2E_BUILDER_ARCHIVE_STATUS=pending \
+        bash "$REPO_ROOT/tests/_lib/test_full_workflow_e2e_runner.sh"
+
+    # Touch commit per AGENTS.md "Worktree Commit Flow" (lightweight mode:
+    # changes are made on main repo, not in worktree)
+    echo "# E2E touch $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$root/openspec/changes/$name/touch.log"
     git -C "$root" add "openspec/changes/$name/touch.log"
     git -C "$root" commit -q -m "e2e: touch commit for lightweight mode"
 }
 
-invoke_archive() {
+# Invoke archive gate (real function from _lib/archive.sh)
+# Used for ERROR PATH tests only — checks tasks.md completeness
+# Calls: source _lib/archive.sh; archive_gate_check <name> <root>
+# Args: $1 = fake project root, $2 = change name
+invoke_archive_gate() {
     local root="$1" name="$2"
-    [ -d "$root" ] || { echo "❌ invoke_archive: root not found: $root" >&2; return 4; }
-    [ -n "$name" ] || { echo "❌ invoke_archive: change name required" >&2; return 4; }
+    cd "$root" || return 1
 
-    local default_branch
-    default_branch=$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null || echo "master")
-    local change_commits
-    change_commits=$(git -C "$root" log --oneline -- "openspec/changes/$name/" 2>/dev/null | wc -l | tr -d ' ')
-
-    if [ "${change_commits:-0}" -lt 2 ]; then
-        echo "❌ archive gate: lightweight mode requires ≥2 commits touching openspec/changes/$name/ (got ${change_commits:-0})" >&2
+    # Source the real archive.sh (provides archive_gate_check function)
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/_lib/archive.sh" 2>/dev/null || {
+        echo "❌ cannot source _lib/archive.sh" >&2
         return 1
-    fi
+    }
 
-    local tasks_file="$root/openspec/changes/$name/tasks.md"
-    local unchecked
-    unchecked=$(grep -cE "^- \[ \]" "$tasks_file" 2>/dev/null || echo 0)
-    if [ "$unchecked" -gt 0 ]; then
-        echo "❌ archive gate: tasks.md has $unchecked unchecked items" >&2
-        return 2
-    fi
+    # Real gate: bypass non-task sub-gates (verifier + ac-verifier are Phase 2)
+    SKIP_VERIFIER_CONTRACT=yes \
+    SKIP_AC_VERIFICATION=yes \
+    FORCE_ARCHIVE_INCOMPLETE=no \
+        archive_gate_check "$name" "$root"
+}
 
-    if [ ! -f "$root/.rddf/state/builder/$name.json" ]; then
-        echo "❌ archive gate: missing .rddf/state/builder/$name.json" >&2
-        return 3
-    fi
+# Invoke full archive happy path: real openspec CLI + real mark_iteration_archived
+# Calls: openspec archive + skills._lib.iteration.post_archive.mark_iteration_archived
+# Args: $1 = fake project root, $2 = change name
+invoke_archive_happy() {
+    local root="$1" name="$2"
+    cd "$root" || return 1
 
-    mkdir -p "$root/openspec/changes/archive"
-    mv "$root/openspec/changes/$name" "$root/openspec/changes/archive/$name"
+    # Real archive CLI
+    openspec archive "$name" --yes 2>&1 || {
+        echo "❌ openspec archive failed" >&2
+        return 1
+    }
+
+    # Auto-commit the archive file moves (mirrors _lib/archive.sh::commit_archive_moves)
     git -C "$root" add "openspec/changes/" 2>/dev/null || true
     git -C "$root" commit -q -m "archive($name): archive completed" 2>/dev/null || true
 
-    mkdir -p "$root/.rddf/state"
-    if [ ! -f "$root/.rddf/state/iteration.json" ]; then
-        cat > "$root/.rddf/state/iteration.json" <<EOF
-{
-  "sprints": [
-    {"change": "$name", "status": "archived", "archived_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-  ]
-}
-EOF
-    else
-        jq --arg name "$name" \
-            '.sprints |= map(if .change == $name then .status = "archived" else . end)' \
-            "$root/.rddf/state/iteration.json" > "$root/.rddf/state/iteration.json.tmp" \
-            && mv "$root/.rddf/state/iteration.json.tmp" "$root/.rddf/state/iteration.json"
-    fi
+    # Real mark_iteration_archived via skills._lib.iteration.post_archive
+    # (Oracle C1 safe: env-var passing, inline heredoc has no bash $VAR inside)
+    local archive_sha
+    archive_sha=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)
+
+    PROJECT_ROOT="$root" \
+    CHANGE_NAME="$name" \
+    ARCHIVE_COMMIT_SHA="$archive_sha" \
+    SKIP_VERIFIER_CONTRACT=yes \
+    SKIP_AC_VERIFICATION=yes \
+    FORCE_ARCHIVE_INCOMPLETE=no \
+        python3 <<'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ.get("REPO_ROOT", "."))
+try:
+    from skills._lib.iteration.post_archive import mark_iteration_archived
+    mark_iteration_archived(
+        project_root=os.environ["PROJECT_ROOT"],
+        change_name=os.environ["CHANGE_NAME"],
+        archive_commit_sha=os.environ.get("ARCHIVE_COMMIT_SHA", ""),
+    )
+    print("✅ mark_iteration_archived complete")
+except Exception as e:
+    print(f"❌ mark_iteration_archived failed: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
 }
 
+# ─── State assertions ───────────────────────────────────────────────────
+
+# Assert state file has expected schema fields
+# Args: $1 = fake project root, $2 = state file (relative to .rddf/state/),
+#       $3 = pipe-separated "key:val|key:val"
 assert_state() {
     local root="$1" file="$2" fields="$3"
     local state_file="$root/.rddf/state/$file"
@@ -188,4 +279,52 @@ assert_state() {
             return 1
         fi
     done
+}
+
+# Validate state file against its real schema (jsonschema defense-in-depth)
+# Args: $1 = fake project root, $2 = state file (relative to .rddf/state/),
+#       $3 = (optional) schema filename under _lib/schemas/ (auto-derived if omitted)
+assert_schema() {
+    local root="$1" file="$2" schema="${3:-}"
+    local state_file="$root/.rddf/state/$file"
+
+    # Auto-derive schema filename if not provided
+    case "$file" in
+        .arch-handoff.json)     schema="${schema:-arch_handoff_schema.json}" ;;
+        .planner-handoff.json)  schema="${schema:-planner_handoff_schema.json}" ;;
+        builder/*.json)         schema="${schema:-builder_handoff_schema.json}" ;;
+        iteration.json)         schema="${schema:-iteration_schema.json}" ;;
+        *)
+            echo "❌ assert_schema: unknown file $file" >&2
+            return 1
+            ;;
+    esac
+
+    local schema_file="$REPO_ROOT/_lib/schemas/$schema"
+    [ -f "$schema_file" ] || { echo "❌ schema missing: $schema_file" >&2; return 1; }
+    [ -f "$state_file" ] || { echo "❌ state file missing: $state_file" >&2; return 1; }
+
+    # Run jsonschema.validate via inline Python (Oracle C1 safe — env-var passing)
+    REPO_ROOT="$REPO_ROOT" \
+    E2E_STATE_FILE="$state_file" \
+    E2E_SCHEMA_FILE="$schema_file" \
+        python3 <<'PYEOF'
+import json, os, sys
+sys.path.insert(0, os.environ.get("REPO_ROOT", "."))
+try:
+    import jsonschema
+except ImportError:
+    print("⚠️ jsonschema not installed; skipping contract check", file=sys.stderr)
+    sys.exit(0)
+with open(os.environ["E2E_STATE_FILE"]) as f:
+    payload = json.load(f)
+with open(os.environ["E2E_SCHEMA_FILE"]) as f:
+    schema = json.load(f)
+try:
+    jsonschema.validate(payload, schema)
+    print("✅ schema validate OK")
+except jsonschema.ValidationError as e:
+    print(f"❌ schema validate FAIL: {e.message}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
 }

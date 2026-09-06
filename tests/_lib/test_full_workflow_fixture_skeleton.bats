@@ -9,11 +9,14 @@ load ../test_helper
     [ "$status" -eq 0 ]
 }
 
-@test "fixture helper exports 8 expected functions" {
+@test "fixture helper exports 10 expected functions" {
     load_lib test_full_workflow_fixture
+    # v2 (real path): invoke_archive split into invoke_archive_gate (error path)
+    # + invoke_archive_happy (happy path); added invoke_arch_gate for arch error case.
     for fn in setup_fake_project write_arch_fixture write_proposal_fixture \
-              invoke_arch_stage invoke_planner_stage invoke_builder_phases \
-              invoke_archive assert_state; do
+              invoke_arch_stage invoke_arch_gate invoke_planner_stage \
+              invoke_builder_phases invoke_archive_gate invoke_archive_happy \
+              assert_state assert_schema; do
         run declare -F "$fn"
         [ "$status" -eq 0 ] || { echo "missing function: $fn"; return 1; }
     done
