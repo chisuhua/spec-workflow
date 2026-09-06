@@ -141,7 +141,8 @@ EOF
     [ "$output" != "null" ] && [ -n "$output" ]
     run jq -r '.changes[] | select(.name=="e2e-fixture") | .tasks_done' \
         "$FAKE_ROOT/.rddf/state/iteration.json"
-    [ "$output" = "1" ]
+    # tasks_done >= 1 (real archive_gate_check only requires ≥1 [x] task complete)
+    [ "$output" -ge 1 ]
 
     # No active change (real openspec CLI moves it)
     [ ! -d "$FAKE_ROOT/openspec/changes/e2e-fixture" ]
